@@ -36,6 +36,18 @@ FIN = re.compile(r"stock|market|fed\b|federal reserve|inflation|interest rate|ra
 STOP = set("the a an of to in on for and or at by with from as is are was were be been it its this that these those after before over under "
            "into amid new says say said will could would may might than more most less how why what who when where about up down out off "
            "just not no yes you your we our their his her they them he she has have had but can cut hit hits".split())
+BAD = re.compile(r"stock price|price,? news|quote|\bhistory\b|\binc\b|corporation|\bltd\b|\bplc\b|price prediction|forecast|how to |"
+                 r"best .* (stocks|etfs?) to buy|press release|transcript|prnewswire|business wire|globenewswire|price target|analyst rating", re.I)
+TICKER = re.compile(r"\([A-Z][A-Z.]{0,5}\)")
+MACRO = re.compile(r"stock market|wall street|\bfed\b|federal reserve|inflation|interest rate|rate cut|recession|bond|yield|treasur|dollar|oil|"
+                   r"bitcoin|crypto|gdp|jobs|unemployment|tariff|debt|banks?\b|housing|mortgage|econom|s&p|nasdaq|dow\b|layoffs|china|trade|"
+                   r"billionaire|bubble|crash|margin|hedge fund|private credit", re.I)
+
+
+def bad_title(t):
+    return bool(BAD.search(t) or TICKER.search(t))
+
+
 GENERIC = {"stock", "stocks", "market", "markets", "price", "prices", "says", "wall", "street", "business", "news", "today", "week", "year"}
 EVERGREEN = ["Stock market crash", "Yield curve inversion", "Margin call", "Quantitative easing", "Stagflation", "Hyperinflation",
              "Bretton Woods system", "Subprime mortgage crisis", "Dot-com bubble", "Black Monday (1987)", "Federal funds rate",
@@ -44,7 +56,7 @@ EVERGREEN = ["Stock market crash", "Yield curve inversion", "Margin call", "Quan
              "Great Depression", "Asian financial crisis", "Global financial crisis of 2007-2008", "Federal Reserve", "Inflation",
              "Cryptocurrency bubble", "Private equity", "Exchange-traded fund"]
 
-# keyword regex -> FRED series (id, title, transform, number format)
+# keyword regex -> chart series (id, title, transform, number format)
 SERIES = [
     (r"nasdaq|tech stocks|ai stocks|nvidia|chip", "NASDAQCOM", "NASDAQ Composite Index", None, "{:,.0f}"),
     (r"\bdow\b|dow jones", "DJIA", "Dow Jones Industrial Average", None, "{:,.0f}"),
@@ -57,8 +69,8 @@ SERIES = [
     (r"oil|crude|opec", "DCOILWTICO", "Crude Oil Price (USD per barrel)", None, "${:,.0f}"),
     (r"mortgage|housing|home price|real estate", "MORTGAGE30US", "30-Year Mortgage Rate (%)", None, "{:.2f}%"),
     (r"bitcoin|crypto", "CBBTCUSD", "Bitcoin Price (USD)", None, "${:,.0f}"),
-    (r"dollar|currency|forex", "DTWEXBGS", "US Dollar Index", None, "{:.1f}"),
-    (r"national debt|federal debt|deficit|government debt", "GFDEBTN", "US Federal Debt (millions USD)", None, "{:,.0f}"),
+    (r"dollar|currency|forex|euro\b", "EURUSD", "Euro in US Dollars (USD per 1 EUR)", None, "${:.2f}"),
+    (r"national debt|federal debt|deficit|government debt", "GFDEBTN", "US National Debt (trillions of USD)", None, "${:.1f} trillion"),
     (r"gdp|recession|economic growth|economy", "GDPC1", "US Real GDP Growth (year over year, %)", "yoy", "{:.1f}%"),
     (r"consumer sentiment|confidence|spending", "UMCSENT", "Consumer Sentiment Index", None, "{:.1f}"),
 ]
@@ -98,7 +110,7 @@ def gather():
     with cf.ThreadPoolExecutor(12) as ex:
         for res in ex.map(fetch_feed, FEEDS):
             items += res
-    items = [i for i in items if FIN.search(i["title"] + " " + i["summary"])]
+    items = [i for i in items if FIN.search(i["title"] + " " + i["summary"]) and not bad_title(i["title"])]
     print("finance items:", len(items))
     return items
 
@@ -142,14 +154,19 @@ def pick_topic(items, hist):
     now = time.time()
     for c in cl:
         its = c["items"]
-        c["score"] = len({i["source"] for i in its}) * 3 + len(its) + (3 if now - its[0]["ts"] < 21600 else 1 if now - its[0]["ts"] < 86400 else 0)
+        c["nsrc"] = len({i["source"] for i in its})
+        c["score"] = c["nsrc"] * 3 + len(its) + (3 if now - its[0]["ts"] < 21600 else 1 if now - its[0]["ts"] < 86400 else 0) \
+            + (8 if MACRO.search(" ".join(i["title"] for i in its[:5])) else 0)
     cl.sort(key=lambda c: -c["score"])
-    for c in cl:
-        cnt = Counter(w for i in c["items"] for w in toks(i["title"]) if w not in GENERIC)
-        keys = [w for w, _ in cnt.most_common(5)]
-        title = c["items"][0]["title"]
-        if not is_dup(title, keys, hist):
-            return {"title": title, "keys": keys, "items": c["items"], "evergreen": False}
+    for min_src in (2, 1):          # first choice: stories covered by 2+ different sources
+        for c in cl:
+            if c["nsrc"] < min_src:
+                continue
+            cnt = Counter(w for i in c["items"] for w in toks(i["title"]) if w not in GENERIC)
+            keys = [w for w, _ in cnt.most_common(5)]
+            title = c["items"][0]["title"]
+            if not is_dup(title, keys, hist):
+                return {"title": title, "keys": keys, "items": c["items"], "evergreen": False}
     for name in EVERGREEN:
         keys = sorted(toks(name))[:5]
         if not is_dup(name, keys, hist):
@@ -186,67 +203,118 @@ def wiki(q, n=2):
 
 
 YAHOO = {"SP500": "^GSPC", "NASDAQCOM": "^IXIC", "DJIA": "^DJI", "VIXCLS": "^VIX", "CBBTCUSD": "BTC-USD",
-         "DCOILWTICO": "CL=F", "DGS10": "^TNX", "DTWEXBGS": "DX-Y.NYB"}
+         "DCOILWTICO": "CL=F", "DGS10": "^TNX"}
 _dead = set()
 
 
-def _get(url, params, tries=2, timeout=25):
-    """GET with retries. If a host is unreachable (timeouts), give up on it for the rest of this run."""
+def _get(url, params=None, tries=2, timeout=25):
+    """GET with retries. If a host keeps failing (timeouts, 429, 403, 5xx) give up on it for the rest of this run."""
     host = url.split("/")[2]
     if host in _dead:
         return None
-    neterr = False
+    hard = False
     for k in range(tries):
         try:
             r = requests.get(url, headers=UA, timeout=timeout, params=params)
             if r.status_code == 200 and r.text.strip():
                 return r.text
             print("http", r.status_code, host)
-            neterr = False
+            hard = r.status_code in (403, 429) or r.status_code >= 500
         except Exception as ex:
             print("fetch fail", host, str(ex)[:70])
-            neterr = True
+            hard = True
         time.sleep(2)
-    if neterr:
+    if hard:
         _dead.add(host)
         print("giving up on", host, "for this run")
     return None
+
+
+def _day(ts_ms):
+    return dt.datetime.fromtimestamp(ts_ms, dt.timezone.utc).strftime("%Y-%m-%d")
 
 
 def yahoo_rows(sid):
     sym = YAHOO.get(sid)
     if not sym:
         return None
-    txt = _get("https://query1.finance.yahoo.com/v8/finance/chart/" + requests.utils.quote(sym), {"range": "max", "interval": "1mo"})
+    for host in ("query1", "query2"):
+        txt = _get(f"https://{host}.finance.yahoo.com/v8/finance/chart/" + requests.utils.quote(sym), {"range": "max", "interval": "1mo"})
+        try:
+            j = json.loads(txt)["chart"]["result"][0]
+            rows = [(_day(t), float(c)) for t, c in zip(j["timestamp"], j["indicators"]["quote"][0]["close"]) if c is not None]
+            rows = [r for r in rows if r[0] >= "1995-01-01"]
+            if len(rows) > 20:
+                return rows
+        except Exception:
+            pass
+    return None
+
+
+def wb_rows(indicator):      # World Bank open data (no key), yearly
+    txt = _get(f"https://api.worldbank.org/v2/country/USA/indicator/{indicator}", {"format": "json", "per_page": 80, "date": "1995:2026"})
     try:
-        j = json.loads(txt)["chart"]["result"][0]
-        rows = [(dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%d"), float(c))
-                for t, c in zip(j["timestamp"], j["indicators"]["quote"][0]["close"]) if c is not None]
-        rows = [r for r in rows if r[0] >= "1995-01-01"]
+        rows = sorted((f"{d['date']}-01-01", float(d["value"])) for d in json.loads(txt)[1] if d.get("value") is not None)
+        return rows if len(rows) > 10 else None
+    except Exception:
+        return None
+
+
+def treasury_rows():         # US Treasury FiscalData (no key), national debt in trillions
+    txt = _get("https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v2/accounting/od/debt_to_penny",
+               {"fields": "record_date,tot_pub_debt_out_amt", "filter": "record_date:gte:1995-01-01", "sort": "record_date", "page[size]": "10000"})
+    try:
+        rows = [(r["record_date"], float(r["tot_pub_debt_out_amt"]) / 1e12) for r in json.loads(txt)["data"]]
         return rows if len(rows) > 20 else None
     except Exception:
         return None
 
 
+def ecb_rows():              # European Central Bank (no key), monthly EUR/USD
+    txt = _get("https://data-api.ecb.europa.eu/service/data/EXR/M.USD.EUR.SP00.A", {"format": "csvdata", "startPeriod": "1999-01"})
+    try:
+        rows = [(r["TIME_PERIOD"] + "-01", float(r["OBS_VALUE"])) for r in csv.DictReader(io.StringIO(txt)) if r.get("OBS_VALUE")]
+        return rows if len(rows) > 20 else None
+    except Exception:
+        return None
+
+
+def coingecko_rows():        # CoinGecko (no key), last 365 days of bitcoin
+    txt = _get("https://api.coingecko.com/api/v3/coins/bitcoin/market_chart", {"vs_currency": "usd", "days": "365", "interval": "daily"})
+    try:
+        rows = [(_day(t / 1000), float(p)) for t, p in json.loads(txt)["prices"]]
+        return rows if len(rows) > 20 else None
+    except Exception:
+        return None
+
+
+ALT = {"UNRATE": lambda: wb_rows("SL.UEM.TOTL.ZS"), "CPIAUCSL": lambda: wb_rows("FP.CPI.TOTL.ZG"),
+       "GDPC1": lambda: wb_rows("NY.GDP.MKTP.KD.ZG"), "GFDEBTN": treasury_rows, "EURUSD": ecb_rows, "CBBTCUSD": coingecko_rows}
+NOFRED = {"GFDEBTN", "EURUSD"}
+
+
 def fred_series(sid, transform=None):
+    """Chart data: key-free official sources first, then FRED, then Yahoo."""
     if (sid, transform) in _fred_cache:
         return _fred_cache[(sid, transform)]
-    rows = None
-    txt = _get("https://fred.stlouisfed.org/graph/fredgraph.csv", {"id": sid, "cosd": "1995-01-01"})
-    if txt:
-        try:
-            rows = [(a, float(b)) for a, b in list(csv.reader(io.StringIO(txt)))[1:] if b not in (".", "")]
-            if transform == "yoy" and len(rows) > 12:
-                d0 = [dt.date.fromisoformat(a) for a, _ in rows[:30]]
-                gap = max(1, int(sorted((d0[i + 1] - d0[i]).days for i in range(len(d0) - 1))[len(d0) // 2]))
-                lag = max(1, round(365 / gap))
-                rows = [(rows[i][0], (rows[i][1] / rows[i - lag][1] - 1) * 100) for i in range(lag, len(rows))]
-        except Exception as ex:
-            print("fred parse fail", sid, str(ex)[:60])
-            rows = None
-    if (not rows or len(rows) <= 20) and transform is None:
-        rows = yahoo_rows(sid)
+    rows = ALT[sid]() if sid in ALT else None
+    if not rows and sid not in NOFRED:
+        txt = _get("https://fred.stlouisfed.org/graph/fredgraph.csv", {"id": sid, "cosd": "1995-01-01"})
+        if txt:
+            try:
+                rows = [(a, float(b)) for a, b in list(csv.reader(io.StringIO(txt)))[1:] if b not in (".", "")]
+                if transform == "yoy" and len(rows) > 12:
+                    d0 = [dt.date.fromisoformat(a) for a, _ in rows[:30]]
+                    gap = max(1, int(sorted((d0[i + 1] - d0[i]).days for i in range(len(d0) - 1))[len(d0) // 2]))
+                    lag = max(1, round(365 / gap))
+                    rows = [(rows[i][0], (rows[i][1] / rows[i - lag][1] - 1) * 100) for i in range(lag, len(rows))]
+            except Exception as ex:
+                print("fred parse fail", sid, str(ex)[:60])
+                rows = None
+        if (not rows or len(rows) <= 20) and transform is None:
+            rows = yahoo_rows(sid)
     _fred_cache[(sid, transform)] = rows if rows and len(rows) > 20 else None
+    print("data", sid, "->", "ok" if _fred_cache[(sid, transform)] else "unavailable")
     return _fred_cache[(sid, transform)]
 
 
@@ -271,9 +339,12 @@ def get_series(sid, ev):
     tgt = dt.date.fromisoformat(last[0]) - dt.timedelta(days=365)
     prev = min(rows, key=lambda r: abs((dt.date.fromisoformat(r[0]) - tgt).days))
     mx = max(rows, key=lambda r: r[1])
-    chg = (last[1] / prev[1] - 1) * 100 if prev[1] else 0
+    if fmt.endswith("%"):
+        chg_txt = f"{last[1] - prev[1]:+.1f} percentage points"
+    else:
+        chg_txt = f"{((last[1] / prev[1] - 1) * 100 if prev[1] else 0):+.1f} percent change"
     stats = (f"{title}: latest reading {fmt.format(last[1])} on {last[0]}; a year earlier it was about {fmt.format(prev[1])} "
-             f"({chg:+.1f} percent change); the highest reading since 1995 was {fmt.format(mx[1])} on {mx[0]}.")
+             f"({chg_txt}); the highest reading since 1995 was {fmt.format(mx[1])} on {mx[0]}.")
     ev["series"][sid] = {"title": title, "pts": pts, "fmt": fmt, "stats": stats}
     return ev["series"][sid]
 
