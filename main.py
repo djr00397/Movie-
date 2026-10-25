@@ -11,6 +11,8 @@ def main():
     mode = os.environ.get("MODE", "long")
     print("MODE:", mode)
     art.ensure_fonts()
+    yt = upload.youtube()          # fail fast: check the YouTube login BEFORE the long work starts
+    print("YouTube login OK")
     hist = S.load_hist()
     items = S.gather()
     topic = S.pick_topic(items, hist)
@@ -40,7 +42,7 @@ def main():
     out = os.path.join(C.WORK, f"{mode}.mp4")
     video.render(scenes, words, voice, ev, audio_path, out, W, H, mode, dur, seo["thumb_text"])
     th = thumb.make(seo["thumb_text"], ev, os.path.join(C.WORK, "thumb.jpg"))
-    vid = upload.upload(out, th, seo, mode)
+    vid = upload.upload(out, th, seo, mode, yt)
     S.save_hist(topic, mode, vid)
     shutil.rmtree(C.WORK, ignore_errors=True)
 
