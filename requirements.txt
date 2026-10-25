@@ -1,73 +1,10 @@
-name: finance-video-bot
-
-on:
-  schedule:
-    # Times are UTC. Jobs start early and the upload is SCHEDULED for the exact slot.
-    - cron: "30 22 * * *"   # short  -> goes live 00:00 UTC = 06:00 Bangladesh time
-    - cron: "30 10 * * *"   # short  -> goes live 12:00 UTC = 18:00 Bangladesh time
-    - cron: "0 15 * * *"    # long   -> goes live 18:00 UTC = 00:00 Bangladesh time
-    - cron: "0 3 * * *"     # long   -> goes live 06:00 UTC = 12:00 Bangladesh time
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "long or short"
-        default: "long"
-
-permissions:
-  contents: write
-
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-      YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-      YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Decide mode
-        run: |
-          case "${{ github.event.schedule }}" in
-            "30 22 * * *"|"30 10 * * *") echo "MODE=short" >> $GITHUB_ENV ;;
-            "0 15 * * *"|"0 3 * * *")    echo "MODE=long"  >> $GITHUB_ENV ;;
-            *) echo "MODE=${{ github.event.inputs.mode || 'long' }}" >> $GITHUB_ENV ;;
-          esac
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg espeak-ng fonts-liberation fonts-dejavu-core
-
-      - name: Cache local AI models
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/huggingface
-            models
-            assets
-          key: ai-models-v1
-
-      - name: Python packages
-        run: |
-          pip install -r requirements.txt
-          pip install llama-cpp-python --prefer-binary --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-
-      - name: Make and publish video
-        run: python main.py
-
-      - name: Save topic history
-        if: success()
-        run: |
-          git config user.name "video-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add history
-          git commit -m "history ${{ env.MODE }}" || exit 0
-          git pull --rebase --autostash
-          git push
+requests
+feedparser
+trafilatura
+numpy
+Pillow
+soundfile
+kokoro-onnx
+huggingface_hub
+google-api-python-client
+google-auth
