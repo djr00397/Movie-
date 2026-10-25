@@ -62,8 +62,6 @@ SERIES = [
     (r"gdp|recession|economic growth|economy", "GDPC1", "US Real GDP Growth (year over year, %)", "yoy", "{:.1f}%"),
     (r"consumer sentiment|confidence|spending", "UMCSENT", "Consumer Sentiment Index", None, "{:.1f}"),
 ]
-# backup source (monthly closes) for market series if FRED is unreachable from the runner
-STOOQ = {"SP500": "^spx", "NASDAQCOM": "^ndq", "DJIA": "^dji", "VIXCLS": "^vix", "CBBTCUSD": "btc.v", "DCOILWTICO": "cl.f"}
 _fred_cache = {}
 
 
@@ -187,28 +185,43 @@ def wiki(q, n=2):
     return out
 
 
-def _get(url, params, tries=3, timeout=90):
+YAHOO = {"SP500": "^GSPC", "NASDAQCOM": "^IXIC", "DJIA": "^DJI", "VIXCLS": "^VIX", "CBBTCUSD": "BTC-USD",
+         "DCOILWTICO": "CL=F", "DGS10": "^TNX", "DTWEXBGS": "DX-Y.NYB"}
+_dead = set()
+
+
+def _get(url, params, tries=2, timeout=25):
+    """GET with retries. If a host is unreachable (timeouts), give up on it for the rest of this run."""
+    host = url.split("/")[2]
+    if host in _dead:
+        return None
+    neterr = False
     for k in range(tries):
         try:
             r = requests.get(url, headers=UA, timeout=timeout, params=params)
             if r.status_code == 200 and r.text.strip():
                 return r.text
-            print("http", r.status_code, url[:50])
+            print("http", r.status_code, host)
+            neterr = False
         except Exception as ex:
-            print("fetch retry", k + 1, url[:50], str(ex)[:80])
-        time.sleep(3 * (k + 1))
+            print("fetch fail", host, str(ex)[:70])
+            neterr = True
+        time.sleep(2)
+    if neterr:
+        _dead.add(host)
+        print("giving up on", host, "for this run")
     return None
 
 
-def stooq_rows(sid):
-    sym = STOOQ.get(sid)
+def yahoo_rows(sid):
+    sym = YAHOO.get(sid)
     if not sym:
         return None
-    txt = _get("https://stooq.com/q/d/l/", {"s": sym, "i": "m"}, 2, 40)
-    if not txt:
-        return None
+    txt = _get("https://query1.finance.yahoo.com/v8/finance/chart/" + requests.utils.quote(sym), {"range": "max", "interval": "1mo"})
     try:
-        rows = [(r[0], float(r[4])) for r in list(csv.reader(io.StringIO(txt)))[1:] if len(r) >= 5 and r[4]]
+        j = json.loads(txt)["chart"]["result"][0]
+        rows = [(dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%d"), float(c))
+                for t, c in zip(j["timestamp"], j["indicators"]["quote"][0]["close"]) if c is not None]
         rows = [r for r in rows if r[0] >= "1995-01-01"]
         return rows if len(rows) > 20 else None
     except Exception:
@@ -232,8 +245,7 @@ def fred_series(sid, transform=None):
             print("fred parse fail", sid, str(ex)[:60])
             rows = None
     if (not rows or len(rows) <= 20) and transform is None:
-        print("fred unavailable, trying backup source for", sid)
-        rows = stooq_rows(sid)
+        rows = yahoo_rows(sid)
     _fred_cache[(sid, transform)] = rows if rows and len(rows) > 20 else None
     return _fred_cache[(sid, transform)]
 
@@ -256,7 +268,8 @@ def get_series(sid, ev):
     if pts[-1] != rows[-1]:
         pts.append(rows[-1])
     last = rows[-1]
-    prev = rows[max(0, len(rows) - 1 - (252 if len(rows) > 1500 else 12))]
+    tgt = dt.date.fromisoformat(last[0]) - dt.timedelta(days=365)
+    prev = min(rows, key=lambda r: abs((dt.date.fromisoformat(r[0]) - tgt).days))
     mx = max(rows, key=lambda r: r[1])
     chg = (last[1] / prev[1] - 1) * 100 if prev[1] else 0
     stats = (f"{title}: latest reading {fmt.format(last[1])} on {last[0]}; a year earlier it was about {fmt.format(prev[1])} "
