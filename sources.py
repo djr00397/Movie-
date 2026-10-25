@@ -62,6 +62,8 @@ SERIES = [
     (r"gdp|recession|economic growth|economy", "GDPC1", "US Real GDP Growth (year over year, %)", "yoy", "{:.1f}%"),
     (r"consumer sentiment|confidence|spending", "UMCSENT", "Consumer Sentiment Index", None, "{:.1f}"),
 ]
+# backup source (monthly closes) for market series if FRED is unreachable from the runner
+STOOQ = {"SP500": "^spx", "NASDAQCOM": "^ndq", "DJIA": "^dji", "VIXCLS": "^vix", "CBBTCUSD": "btc.v", "DCOILWTICO": "cl.f"}
 _fred_cache = {}
 
 
@@ -185,22 +187,54 @@ def wiki(q, n=2):
     return out
 
 
+def _get(url, params, tries=3, timeout=90):
+    for k in range(tries):
+        try:
+            r = requests.get(url, headers=UA, timeout=timeout, params=params)
+            if r.status_code == 200 and r.text.strip():
+                return r.text
+            print("http", r.status_code, url[:50])
+        except Exception as ex:
+            print("fetch retry", k + 1, url[:50], str(ex)[:80])
+        time.sleep(3 * (k + 1))
+    return None
+
+
+def stooq_rows(sid):
+    sym = STOOQ.get(sid)
+    if not sym:
+        return None
+    txt = _get("https://stooq.com/q/d/l/", {"s": sym, "i": "m"}, 2, 40)
+    if not txt:
+        return None
+    try:
+        rows = [(r[0], float(r[4])) for r in list(csv.reader(io.StringIO(txt)))[1:] if len(r) >= 5 and r[4]]
+        rows = [r for r in rows if r[0] >= "1995-01-01"]
+        return rows if len(rows) > 20 else None
+    except Exception:
+        return None
+
+
 def fred_series(sid, transform=None):
     if (sid, transform) in _fred_cache:
         return _fred_cache[(sid, transform)]
-    try:
-        r = requests.get("https://fred.stlouisfed.org/graph/fredgraph.csv", headers=UA, timeout=40,
-                         params={"id": sid, "cosd": "1995-01-01"})
-        rows = [(a, float(b)) for a, b in list(csv.reader(io.StringIO(r.text)))[1:] if b not in (".", "")]
-        if transform == "yoy" and len(rows) > 12:
-            d0 = [dt.date.fromisoformat(a) for a, _ in rows[:30]]
-            gap = max(1, int(sorted((d0[i + 1] - d0[i]).days for i in range(len(d0) - 1))[len(d0) // 2]))
-            lag = max(1, round(365 / gap))
-            rows = [(rows[i][0], (rows[i][1] / rows[i - lag][1] - 1) * 100) for i in range(lag, len(rows))]
-        _fred_cache[(sid, transform)] = rows if len(rows) > 20 else None
-    except Exception as ex:
-        print("fred fail", sid, str(ex)[:60])
-        _fred_cache[(sid, transform)] = None
+    rows = None
+    txt = _get("https://fred.stlouisfed.org/graph/fredgraph.csv", {"id": sid, "cosd": "1995-01-01"})
+    if txt:
+        try:
+            rows = [(a, float(b)) for a, b in list(csv.reader(io.StringIO(txt)))[1:] if b not in (".", "")]
+            if transform == "yoy" and len(rows) > 12:
+                d0 = [dt.date.fromisoformat(a) for a, _ in rows[:30]]
+                gap = max(1, int(sorted((d0[i + 1] - d0[i]).days for i in range(len(d0) - 1))[len(d0) // 2]))
+                lag = max(1, round(365 / gap))
+                rows = [(rows[i][0], (rows[i][1] / rows[i - lag][1] - 1) * 100) for i in range(lag, len(rows))]
+        except Exception as ex:
+            print("fred parse fail", sid, str(ex)[:60])
+            rows = None
+    if (not rows or len(rows) <= 20) and transform is None:
+        print("fred unavailable, trying backup source for", sid)
+        rows = stooq_rows(sid)
+    _fred_cache[(sid, transform)] = rows if rows and len(rows) > 20 else None
     return _fred_cache[(sid, transform)]
 
 
