@@ -118,7 +118,9 @@ def mix(voice, events, out_path):
     n = len(voice) + int(0.8 * SR)
     out = np.zeros(n, dtype=np.float32)
     out[:len(voice)] += voice
-    out += 0.055 * music(n / SR)[:n]
+    m = music(n / SR)
+    m = np.pad(m, (0, max(0, n - len(m))))[:n]
+    out += 0.055 * m
     cache = {}
     for t, kind in events:
         w = cache.setdefault(kind, sfx(kind))
