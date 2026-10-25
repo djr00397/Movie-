@@ -9,8 +9,7 @@ import config as C
 
 def youtube():
     creds = Credentials(None, refresh_token=os.environ["YT_REFRESH_TOKEN"], token_uri="https://oauth2.googleapis.com/token",
-                        client_id=os.environ["YT_CLIENT_ID"], client_secret=os.environ["YT_CLIENT_SECRET"],
-                        scopes=["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube"])
+                        client_id=os.environ["YT_CLIENT_ID"], client_secret=os.environ["YT_CLIENT_SECRET"])
     creds.refresh(Request())
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
@@ -28,8 +27,8 @@ def next_slot(mode):
     return min(cands) if cands else None
 
 
-def upload(path, thumb, seo, mode):
-    yt = youtube()
+def upload(path, thumb, seo, mode, yt=None):
+    yt = yt or youtube()
     slot = next_slot(mode)
     status = {"privacyStatus": "public", "selfDeclaredMadeForKids": False, "embeddable": True, "publicStatsViewable": True}
     # Scheduled publishing: the video goes live exactly at the slot (06:00/18:00 or 00:00/12:00 Bangladesh time)
@@ -58,5 +57,5 @@ def upload(path, thumb, seo, mode):
         yt.thumbnails().set(videoId=vid, media_body=MediaFileUpload(thumb, mimetype="image/jpeg")).execute()
         print("thumbnail set")
     except Exception as ex:
-        print("thumbnail failed (channel must be phone-verified):", str(ex)[:150])
+        print("thumbnail failed (needs the 'youtube' scope and a phone-verified channel):", str(ex)[:150])
     return vid
