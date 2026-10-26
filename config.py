@@ -12,6 +12,7 @@ MAIN_MODEL = ("bartowski/Qwen2.5-7B-Instruct-GGUF", "Qwen2.5-7B-Instruct-Q4_K_M.
 FAST_MODEL = ("bartowski/Qwen2.5-3B-Instruct-GGUF", "Qwen2.5-3B-Instruct-Q4_K_M.gguf")
 
 VOICE = "am_michael"          # Kokoro English voice
+CHARACTER_STYLE = "stick"      # "stick" = true stickman characters, "rig" = fuller cartoon puppets
 FPS = 24
 LONG_SIZE = (1280, 720)
 SHORT_SIZE = (1080, 1920)
