@@ -36,14 +36,16 @@ def main():
 
     W, H = C.LONG_SIZE if mode == "long" else C.SHORT_SIZE
     scenes, sfx_events = video.plan(units, script, ev, mode, dur)
+    print("scene types:", {k: sum(1 for s in scenes if s["kind"] == k) for k in {s["kind"] for s in scenes}})
     words = video.words_timeline(units)
     audio_path = os.path.join(C.WORK, "final.wav")
     V.mix(voice, sfx_events, audio_path)
     out = os.path.join(C.WORK, f"{mode}.mp4")
     video.render(scenes, words, voice, ev, audio_path, out, W, H, mode, dur, seo["thumb_text"])
-    th = thumb.make(seo["thumb_text"], ev, os.path.join(C.WORK, "thumb.jpg"))
+    th, tname = thumb.make(topic, ev, seo, script, os.path.join(C.WORK, "thumb.jpg"))
     vid = upload.upload(out, th, seo, mode, yt)
     S.save_hist(topic, mode, vid)
+    thumb.record(tname, mode)
     shutil.rmtree(C.WORK, ignore_errors=True)
 
 
