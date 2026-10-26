@@ -1,7 +1,8 @@
-import re, math, bisect, subprocess, random
+import re, math, bisect, subprocess, random, datetime
 import numpy as np
 from PIL import Image, ImageDraw
 import config as C, art, art2, puppet as PU, sources as S, media
+import newsgfx as N
 
 ICONS = [(r"crash|fall|plunge|drop|collapse|tumbl|slump|sell-?off|lose|loss|decline|down", "arrow_down"),
          (r"surge|rally|rise|record|soar|jump|gain|boom|climb|up\b", "arrow_up"),
@@ -29,6 +30,60 @@ DEFINE = re.compile(r"\bmeans?\b|called|known as|is when|refers? to|defined|in s
 CYCLE = re.compile(r"cycle|loop|spiral|feedback|vicious|again and again|repeat", re.I)
 NEGATION = re.compile(r"\b(not|no|never|without|nobody|nothing|isn't|won't|can't|doesn't|don't|fail|failed)\b", re.I)
 YEAR = re.compile(r"\b(19[89]\d|20[0-3]\d)\b")
+
+
+DATA_SRC = {"UNRATE": "World Bank", "CPIAUCSL": "World Bank", "GDPC1": "World Bank", "GFDEBTN": "U.S. Treasury",
+            "EURUSD": "European Central Bank", "CBBTCUSD": "CoinGecko"}
+
+
+def data_source(sid):
+    return DATA_SRC.get(sid, "FRED / Yahoo Finance")
+
+
+def snippets(ev):
+    """title -> short body text taken from the real RSS evidence of this video"""
+    out = {}
+    for h in ev["headlines"]:
+        m = re.search(r"^- " + re.escape(h["title"]) + r"\. (.*)$", ev.get("text", ""), re.M)
+        out[h["title"]] = m.group(1).strip() if m else ""
+    return out
+
+
+def match_headline(text, ev, snip):
+    """Find the evidence headline that best supports this part of the script."""
+    t = S.toks(text)
+    best, bs = None, 0.0
+    for h in ev["headlines"]:
+        ht = S.toks(h["title"] + " " + snip.get(h["title"], ""))
+        shared = len(t & ht)
+        sc_ = shared / max(1, len(t))
+        if shared >= 2 and sc_ > bs:
+            best, bs = h, sc_
+    return (best, bs) if bs >= 0.2 else (None, 0.0)
+
+
+def hl_phrase(title, scene_text):
+    st = S.toks(scene_text)
+    ws = title.split()
+    runs, i = [], 0
+    while i < len(ws):
+        if re.sub(r"\W", "", ws[i].lower()) in st or re.search(r"\d", ws[i]):
+            j = i
+            while j + 1 < len(ws) and j - i < 3 and (re.sub(r"\W", "", ws[j + 1].lower()) in st or re.search(r"\d", ws[j + 1])):
+                j += 1
+            runs.append((j - i + 1, i, j))
+            i = j + 1
+        else:
+            i += 1
+    if runs:
+        n, i, j = max(runs)
+        return " ".join(ws[i:j + 1]).strip(",.:;")
+    return " ".join(ws[:3])
+
+
+def outlet_name(h):
+    src = (h or {}).get("source", "")
+    return src if src and "http" not in src and len(src) > 2 else "News Desk"
 
 
 def ease(x):
@@ -117,6 +172,8 @@ def plan(units, script, ev, mode, dur):
     for i, s in enumerate(scenes):
         s["end"] = scenes[i + 1]["start"] if i + 1 < len(scenes) else dur
     scenes[0]["start"] = 0.0
+    snip = snippets(ev)
+    nsrc = len({h["source"] for h in ev["headlines"]})
     hl_i, charts, cd, prev_sec, ph_i = 0, 0, 0, -1, 0
     last_used, last_persona = {}, None
     n = len(scenes)
@@ -131,6 +188,7 @@ def plan(units, script, ev, mode, dur):
         if pers:
             last_used["pers"] = i
         photo_q = next((q for kw, q in PHOTOS if kw in low), None)
+        hm, _sc = match_headline(t, ev, snip) if ev["headlines"] else (None, 0.0)
         if i == 0:
             kind = "title"
         elif i == n - 1:
@@ -144,6 +202,12 @@ def plan(units, script, ev, mode, dur):
                         break
             if sid:
                 kind, cd, charts = "chart", 2, charts + 1
+            elif i in (2, 3) and nsrc >= 2 and cool("newswall", 99):
+                kind = "newswall"
+            elif hm and not BREAKING.search(t) and cool("proof", 3):
+                kind = "proof"
+            elif hm and BREAKING.search(t) and cool("tv", 4):
+                kind = "tv"
             elif YEAR.search(t) and cool("year", 4):
                 kind = "year"
             elif CYCLE.search(t) and cool("cycle", 6):
@@ -164,8 +228,8 @@ def plan(units, script, ev, mode, dur):
                 kind = "keyword"
         cd -= 1
         last_used[kind] = i
-        s.update(kind=kind, series=sid, idx=i, persona=pers or "host", photo_q=photo_q,
-                 hl=ev["headlines"][hl_i % len(ev["headlines"])] if ev["headlines"] else None)
+        s.update(kind=kind, series=sid, idx=i, persona=pers or "host", photo_q=photo_q, snip=snip.get((hm or {}).get("title", ""), ""),
+                 hl=hm if kind in ("proof", "tv") else (ev["headlines"][hl_i % len(ev["headlines"])] if ev["headlines"] else None))
         if kind == "headline":
             hl_i += 1
         s["mood"] = mood_of(t)
@@ -176,7 +240,7 @@ def plan(units, script, ev, mode, dur):
         g = []
         for k, u in enumerate(s["units"]):
             name = pick_gesture(u["text"], i + k, side if mode == "long" else "U")
-            if kind in ("board",):
+            if kind in ("board", "proof", "tv", "newswall"):
                 name = "point_L" if side == "L" else "point_R"
             if kind == "title":
                 name = "open_both"
@@ -195,6 +259,10 @@ def plan(units, script, ev, mode, dur):
                                          "board": "pop", "mascot": "pop", "photo": "whoosh", "year": "swish", "cycle": "swish"}.get(k, "pop")))
         if s["mood"] == "shock":
             sfx.append((s["start"] + .1, "thud"))
+        if k == "proof":
+            sfx += [(s["start"] + 1.0, "swish"), (s["start"] + min(max(s["end"] - s["start"] - .8, 1.5), 2.8), "ding")]
+        if k == "newswall":
+            sfx += [(s["start"] + .8, "pop"), (s["start"] + 1.7, "pop"), (s["start"] + 2.6, "pop"), (s["start"] + 3.4, "ding")]
     return scenes, sfx
 
 
@@ -238,6 +306,7 @@ class Renderer:
         self.words, self.wstarts = words, [w[1] for w in words]
         self.pup = {}
         self.rng = random.Random(11)
+        self.ticker = N.ticker_strip([h["title"] for h in ev["headlines"]] or ["Markets update"]) if self.land else None
 
     # ---------- layout ----------
     def layout(self, sc):
@@ -291,6 +360,7 @@ class Renderer:
             ring = art2.red_circle(110, 110, 6)
             x0, y0 = e["x"], e["y"]
             sc["E"].append(dict(img=ring, x=int(x0 + tx - 55), y=int(y0 + ty - 55), t0=.2 + rd, anim="wedge", dur=.5, dir=1, scale=1))
+            self.put(sc, N.data_tag("Data: " + data_source(sc["series"]), 30 if self.land else 40), .26, .98, .6, "slide", .4)
         elif k == "stat":
             v = find_stat(txt) or "!"
             self.put(sc, art.stat_layer(v, key_phrase(txt), min(rw, 560 if self.land else 700)), .5, .42, .1, "pop", .45)
@@ -312,6 +382,44 @@ class Renderer:
                 last = sc["E"][-1]
                 last["x"], last["y"] = int(e["x"] + bx * f), int(e["y"] + by * f)
             self.put(sc, art2.bubble({"shock": "Uh oh...", "sad": "Not great.", "happy": "Wow!"}.get(mood, "Hmm."), 40), .5, .86, 1.7, "pop", .35)
+        elif k in ("proof", "tv"):
+            h = sc["hl"]
+            outlet = outlet_name(h)
+            if k == "proof":
+                pw, ph = rw, int(min(rh * .92, rw * .70))
+                date = datetime.date.today().strftime("%A, %B %d, %Y")
+                phrase = hl_phrase(h["title"], txt)
+                pg, hl, box = N.paper_page(outlet, date, h["title"], sc["snip"], phrase, pw, ph, sc["idx"])
+                if not box and phrase:
+                    pg, hl, box = N.paper_page(outlet, date, h["title"], sc["snip"], max(phrase.split(), key=len), pw, ph, sc["idx"])
+                e = self.put(sc, pg, .5, .46, .05, "slide", .5, keep=True)
+                if box:
+                    self.put(sc, hl, .5, .46, 1.0, "crop", .8, keep=True)
+                    cx, cy = e["x"] + (box[0] + box[2]) / 2, e["y"] + (box[1] + box[3]) / 2
+                    sc["focus"] = (cx, cy, 1.5 if self.land else 1.35, 1.3, 1.8)
+                self.put(sc, N.stamp("REPORTED", 260 if self.land else 340), .74, .86, min(max(dur - .8, 1.5), 2.8), "pop", .3)
+            else:
+                self.put(sc, N.tv_screen(outlet, h["title"], min(rw, 640 if self.land else rw)), .5, .44, .05, "slide", .5)
+            lt_ = art.banner_layer(f"Reported by {outlet}  \u00b7  {h['ago']}", 30 if self.land else 38)
+            self.put(sc, lt_, .5, .96, .45, "slide", .4)
+        elif k == "newswall":
+            hs, seen = [], set()
+            for h in self.ev["headlines"]:
+                if h["source"] not in seen:
+                    seen.add(h["source"])
+                    hs.append(h)
+            hs = hs[:3]
+            ys = {1: [.45], 2: [.28, .64], 3: [.15, .43, .71]}[len(hs)]
+            maxh = 158 if self.land else 215
+            for j, (h, ay) in enumerate(zip(hs, ys)):
+                card = art.headline_card(h["title"], outlet_name(h), h["ago"], min(rw - 90, 560 if self.land else rw - 90))
+                if card.height > maxh:
+                    f_ = maxh / card.height
+                    card = card.resize((int(card.width * f_), maxh), Image.LANCZOS)
+                self.put(sc, card, .46, ay, .1 + j * .9, "slide", .45)
+                self.put(sc, N.check_badge(70 if self.land else 100), .93, ay, .8 + j * .9, "pop", .3)
+            self.put(sc, N.stamp(f"{len(hs)} SOURCES", 260 if self.land else 360, rot=-8), .5, .94, 3.4, "pop", .3)
+            sc["wall_n"] = len(hs)
         elif k == "board":
             self.put(sc, art2.board(key_phrase(txt), int(rw * .95), int(rw * .95 * .58)), .5, .45, .05, "pop", .45)
         elif k == "newspaper":
@@ -463,6 +571,14 @@ class Renderer:
             kk = min(ease(lt / .4), ease((3.6 - lt) / .4))
             bw = sc["nm"].width
             cv.paste(sc["nm"], (int(-bw + (bw + 40) * kk), H - 100 if self.land else H - 150), sc["nm"])
+        if self.ticker is not None and sc["kind"] in ("proof", "tv", "newswall"):
+            off = int(t * 140) % self.ticker.width
+            row = Image.new("RGB", (W, 46), (200, 30, 40))
+            x = -off
+            while x < W:
+                row.paste(self.ticker, (x, 0))
+                x += self.ticker.width
+            cv.paste(row, (0, H - 46))
         if self.mode == "short":
             i = bisect.bisect_right(self.wstarts, t) - 1
             if i >= 0:
@@ -480,6 +596,18 @@ class Renderer:
         dur = max(.1, sc["end"] - sc["start"])
         z = 1.0 + (0.03 if sc["kind"] != "title" else 0.0) * min(1.0, lt / dur)
         dx = dy = 0
+        fc = sc.get("focus")
+        if fc:                                   # documentary-style push-in onto the highlighted evidence
+            fx, fy, zmax, ft0, fdur = fc
+            kf = ease((lt - ft0) / fdur)
+            z = 1.0 + (zmax - 1.0) * kf
+            cw, chh = W / z, H / z
+            ccx, ccy = W / 2 + (fx - W / 2) * kf, H / 2 + (fy - H / 2) * kf
+            l = max(0, min(W - cw, ccx - cw / 2))
+            tp = max(0, min(H - chh, ccy - chh / 2))
+            if kf > 0:
+                return cv.transform((W, H), Image.EXTENT, (l, tp, l + cw, tp + chh), Image.BILINEAR)
+            return cv
         if sc["mood"] == "shock" and lt < .55:
             dx, dy = self.rng.randint(-6, 6), self.rng.randint(-4, 4)
         if z > 1.001 or dx or dy:
