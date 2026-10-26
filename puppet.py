@@ -4,6 +4,7 @@ import math, re
 from functools import lru_cache
 from PIL import Image, ImageDraw
 import art
+import config as C
 
 INK = (32, 28, 36)
 W0, H0, SS, OX = 560, 700, 2, 80
@@ -97,7 +98,7 @@ def _lerp(a, b, t):
     return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def draw(persona, pose, mouth=0, mood="neutral", blink=0, prop="", height=520):
+def draw_rig(persona, pose, mouth=0, mood="neutral", blink=0, prop="", height=520):
     """pose: dict with aL,bL,aR,bR,tilt,lean,brow,lx,ly. mouth 0/1/2. Returns RGBA image of given height."""
     P = PERSONAS[persona]
     S = SS
@@ -252,3 +253,143 @@ def draw(persona, pose, mouth=0, mood="neutral", blink=0, prop="", height=520):
         d.line([s(HP(-eo + 21, ey)), s(HP(eo - 21, ey))], fill=INK, width=int(4 * S))
     w = int(W0 * height / H0)
     return im.resize((w, height), Image.LANCZOS)
+
+
+def draw_stick(persona, pose, mouth=0, mood="neutral", blink=0, prop="", height=520):
+    """True stickman style: round head, tiny eyes, thin stick arms/legs, simple hands and feet.
+    The person's look comes from hair, glasses, jacket block and tie (never from a real photo)."""
+    P = PERSONAS[persona]
+    S = SS
+    im = Image.new("RGBA", (W0 * S, H0 * S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    hip = (200, 420)
+    lean, tilt = pose.get("lean", 0), pose.get("tilt", 0)
+    T = lambda p: _rot(p, hip, lean)
+    s = lambda p: ((p[0] + OX) * S, p[1] * S)
+    skin = _lerp(P["skin"], (255, 255, 255), .35)
+
+    def line(pts, w=7):
+        q = [s(p) for p in pts]
+        d.line(q, fill=INK, width=int(w * S), joint="curve")
+        for p in (q[0], q[-1]):
+            r = w * S / 2
+            d.ellipse([p[0] - r, p[1] - r, p[0] + r, p[1] + r], fill=INK)
+
+    # legs + simple feet
+    for fx, sg in ((162, -1), (238, 1)):
+        line([(200, 420), (fx, 608)])
+        line([(fx, 608), (fx + sg * 26, 614)])
+    # clothing block (identifies the person) + torso line
+    k = P["kind"]
+    blk = [T(p) for p in [(172, 236), (228, 236), (232, 410), (168, 410)]]
+    if k in ("suit", "sweater", "tshirt", "jacket"):
+        d.polygon([s(p) for p in blk], fill=P["top"], outline=INK, width=int(4 * S))
+    if k == "suit":
+        v = [T(p) for p in [(188, 236), (212, 236), (200, 290)]]
+        d.polygon([s(p) for p in v], fill=P["shirt"], outline=INK, width=int(2 * S))
+        if P.get("tie"):
+            L = 380 if P.get("tie_long") else 350
+            t = [T(p) for p in [(196, 246), (204, 246), (208, L - 30), (200, L), (192, L - 30)]]
+            d.polygon([s(p) for p in t], fill=P["tie"], outline=INK, width=int(2 * S))
+    elif k == "jacket":
+        d.line([s(T((200, 250))), s(T((200, 410)))], fill=(150, 150, 160), width=int(3 * S))
+    else:
+        line([T((200, 214)), T((200, 236))])
+    # arms: thin sticks from the shoulders
+    sh = T((200, 246))
+    hands = {}
+    for side, sx in (("L", -14), ("R", 14)):
+        a, b = pose.get("a" + side, 14), pose.get("b" + side, 12)
+        sg = -1 if side == "L" else 1
+        p0 = (sh[0] + sx, sh[1])
+        up = (p0[0] + sg * 84 * math.sin(math.radians(a)), p0[1] + 84 * math.cos(math.radians(a)))
+        fa = a + b
+        fo = (up[0] + sg * 80 * math.sin(math.radians(fa)), up[1] + 80 * math.cos(math.radians(fa)))
+        line([p0, up, fo])
+        hands[side] = (fo, fa)
+    for side in ("L", "R"):
+        fo, fa = hands[side]
+        sg = -1 if side == "L" else 1
+        hd = (fo[0] + sg * 8 * math.sin(math.radians(fa)), fo[1] + 8 * math.cos(math.radians(fa)))
+        d.ellipse([s((hd[0] - 10, hd[1] - 10)), s((hd[0] + 10, hd[1] + 10))], fill=skin, outline=INK, width=int(4 * S))
+        hands[side] = (hd, fa)
+    if prop == "pointer":
+        hd, fa = hands["R"]
+        dx, dy = math.sin(math.radians(fa)), math.cos(math.radians(fa))
+        e = (hd[0] + dx * 150, hd[1] + dy * 150)
+        d.line([s(hd), s(e)], fill=(120, 80, 40), width=int(6 * S))
+        d.ellipse([s((e[0] - 6, e[1] - 6)), s((e[0] + 6, e[1] + 6))], fill=(214, 39, 40))
+    elif prop == "bag":
+        hd, _ = hands["R"]
+        art.draw_icon(d, "moneybag", (hd[0] + OX) * S, (hd[1] - 34) * S, 40 * S)
+    elif prop == "doc":
+        hd, _ = hands["L"]
+        d.rectangle([s((hd[0] - 26, hd[1] - 48)), s((hd[0] + 26, hd[1] + 12))], fill=(252, 252, 246), outline=INK, width=int(3 * S))
+        for i in range(4):
+            d.line([s((hd[0] - 16, hd[1] - 36 + i * 11)), s((hd[0] + 16, hd[1] - 36 + i * 11))], fill=(214, 39, 40) if i == 0 else (150, 150, 150), width=int(2 * S))
+     # head
+    nb = T((200, 214))
+    HP = lambda dx, dy: _rot(T((200 + dx, 150 + dy)), nb, tilt)
+    hc = HP(0, 0)
+    r = 58
+    hair, hcol = P["hair"], P["hc"]
+    if hair in ("bob", "long"):
+        d.rounded_rectangle([s((hc[0] - 64, hc[1] - 34)), s((hc[0] + 64, hc[1] + 66))], radius=34 * S, fill=hcol, outline=INK, width=int(4 * S))
+    d.ellipse([s((hc[0] - r, hc[1] - r)), s((hc[0] + r, hc[1] + r))], fill=skin, outline=INK, width=int(6 * S))
+
+    def poly(pts, col=hcol):
+        d.polygon([s(HP(x * .84, y * .84)) for x, y in pts], fill=col, outline=INK, width=int(3 * S))
+    if hair == "curly":
+        for i in range(7):
+            a = math.radians(205 + i * 22)
+            c = HP(math.cos(a) * 50, math.sin(a) * 52 - 4)
+            d.ellipse([s((c[0] - 21, c[1] - 21)), s((c[0] + 21, c[1] + 21))], fill=hcol, outline=INK, width=int(3 * S))
+    elif hair == "swoop":
+        poly([(-70, -10), (-62, -52), (-30, -80), (30, -84), (70, -56), (82, -40), (52, -48), (10, -42), (-30, -30), (-66, 6)])
+        poly([(-30, -78), (20, -92), (74, -66), (90, -46), (40, -62), (-10, -60)], _lerp(hcol, (255, 255, 255), .15))
+    elif hair == "side":
+        poly([(-68, -4), (-62, -56), (-20, -80), (40, -78), (68, -46), (68, -6), (50, -44), (-4, -46), (-30, -30)])
+    elif hair == "swept":
+        poly([(-68, -2), (-60, -58), (-10, -84), (50, -76), (70, -40), (66, -6), (40, -52), (-10, -50), (-40, -24)])
+    elif hair == "short":
+        poly([(-68, -8), (-60, -56), (-20, -76), (30, -76), (64, -54), (68, -8), (50, -40), (0, -46), (-46, -38)])
+    elif hair in ("bob", "long"):
+        poly([(-70, 20), (-66, -50), (-20, -80), (40, -78), (70, -44), (70, 20), (48, -34), (0, -44), (-46, -30)])
+    elif hair == "bald":
+        pass
+    lx, ly = pose.get("lx", 0), pose.get("ly", 0)
+    br = max(-1, min(1, pose.get("brow", 0) + {"angry": -1, "sad": .6, "shock": 1, "happy": .3}.get(mood, 0)))
+    for sg in (-1, 1):
+        c = HP(sg * 21, -2)
+        if blink:
+            d.line([s((c[0] - 7, c[1])), s((c[0] + 7, c[1]))], fill=INK, width=int(3 * S))
+        else:
+            rr = 6 if mood == "shock" else 4.5
+            d.ellipse([s((c[0] + lx * 3 - rr, c[1] + ly * 2 - rr)), s((c[0] + lx * 3 + rr, c[1] + ly * 2 + rr))], fill=INK)
+        by = -20 - br * 6
+        sl = (br * 7) if mood in ("angry", "sad") else 0
+        b0 = HP(sg * 33, -2 + by + (sl if sg == -1 else -sl))
+        b1 = HP(sg * 10, -2 + by - (sl if sg == -1 else -sl))
+        d.line([s(b0), s(b1)], fill=INK, width=int(3 * S))
+    my = 30
+    if mood == "shock" or mouth == 2:
+        d.ellipse([s(HP(-10, my - 8)), s(HP(10, my + 14))], fill=(70, 24, 28), outline=INK, width=int(3 * S))
+    elif mouth == 1:
+        d.pieslice([s(HP(-16, my - 14)), s(HP(16, my + 16))], 0, 180, fill=(70, 24, 28), outline=INK, width=int(3 * S))
+    elif mood == "sad":
+        d.arc([s(HP(-14, my - 2)), s(HP(14, my + 16))], 200, 340, fill=INK, width=int(3 * S))
+    else:
+        d.arc([s(HP(-16, my - 12)), s(HP(16, my + 10))], 15, 165, fill=INK, width=int(3 * S))
+    if P["glasses"]:
+        for sg in (-1, 1):
+            c = HP(sg * 21, -2)
+            d.ellipse([s((c[0] - 15, c[1] - 15)), s((c[0] + 15, c[1] + 15))], outline=INK, width=int(3 * S))
+        d.line([s(HP(-6, -2)), s(HP(6, -2))], fill=INK, width=int(3 * S))
+    w = int(W0 * height / H0)
+    return im.resize((w, height), Image.LANCZOS)
+
+
+def draw(persona, pose, mouth=0, mood="neutral", blink=0, prop="", height=520):
+    """Character style is chosen in config.CHARACTER_STYLE: 'stick' (true stickman) or 'rig' (cartoon puppet)."""
+    fn = draw_rig if getattr(C, "CHARACTER_STYLE", "stick") == "rig" else draw_stick
+    return fn(persona, pose, mouth, mood, blink, prop, height)
