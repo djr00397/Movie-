@@ -109,6 +109,18 @@ def sfx(kind):
         env = np.sin(np.pi * t / d) ** 2
         ch = np.sin(2 * np.pi * (300 * t + 2200 * t ** 2 / d))
         return (np.random.randn(len(t)) * ch * env * 0.25).astype(np.float32)
+    if kind == "swish":      # quick marker/arrow stroke
+        d = 0.35
+        t = np.arange(int(d * SR)) / SR
+        return (np.random.randn(len(t)) * np.sin(np.pi * t / d) * 0.12 * np.sin(2 * np.pi * 900 * t)).astype(np.float32)
+    if kind == "ding":       # big number / emphasis
+        d = 0.6
+        t = np.arange(int(d * SR)) / SR
+        return ((np.sin(2 * np.pi * 1320 * t) + 0.4 * np.sin(2 * np.pi * 1980 * t)) * np.exp(-t * 6) * 0.35).astype(np.float32)
+    if kind == "thud":       # crash / bad news
+        d = 0.5
+        t = np.arange(int(d * SR)) / SR
+        return (np.sin(2 * np.pi * (90 - 40 * t) * t) * np.exp(-t * 8) * 0.8).astype(np.float32)
     d = 0.12
     t = np.arange(int(d * SR)) / SR
     return (np.sin(2 * np.pi * 620 * t) * np.exp(-t * 35) * 0.5).astype(np.float32)
